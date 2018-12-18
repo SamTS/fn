@@ -148,7 +148,7 @@ func apiMetricsWrap(s *Server) {
 				tag.Upsert(methodKey, c.Request.Method),
 			)
 			if err != nil {
-				panic(err)
+				logrus.Fatal(err)
 			}
 			stats.Record(ctx, apiRequestCountMeasure.M(0))
 			c.Next()
@@ -161,7 +161,7 @@ func apiMetricsWrap(s *Server) {
 				tag.Insert(whodunitKey, "service"), // only insert this if it doesn't exist
 			)
 			if err != nil {
-				panic(err)
+				logrus.Fatal(err)
 			}
 			stats.Record(ctx, apiResponseCountMeasure.M(0))
 			stats.Record(ctx, apiLatencyMeasure.M(int64(time.Since(start)/time.Millisecond)))

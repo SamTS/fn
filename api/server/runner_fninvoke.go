@@ -72,7 +72,7 @@ func (s *Server) handleFnInvokeCall2(c *gin.Context) error {
 		// report all user-directed errors and function responses from here, after submit has run.
 		// this is our never ending attempt to distinguish user and platform errors.
 		ctx, err := tag.New(c.Request.Context(),
-			tag.Upsert(whodunitKey, "user"),
+			tag.Insert(whodunitKey, "user"),
 		)
 		if err != nil {
 			panic(err)
