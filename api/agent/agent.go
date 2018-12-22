@@ -606,7 +606,19 @@ func (s *hotSlot) exec(ctx context.Context, call *call) error {
 	})
 
 	call.req = call.req.WithContext(ctx) // TODO this is funny biz reed is bad
-	return s.dispatch(ctx, call)
+	err := s.dispatch(ctx, call)
+
+	switch err {
+	// TODO handle i/o errors, also user fault?
+	case context.DeadlineExceeded, context.Canceled:
+		return NewFuncError(models.ErrCallTimeout)
+	default:
+		ae, ok := err.(models.APIError)
+		if ok {
+			err = NewFuncError(ae)
+		}
+		return err
+	}
 }
 
 var removeHeaders = map[string]bool{
