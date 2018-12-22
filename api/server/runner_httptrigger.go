@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fnproject/fn/api"
+	"github.com/fnproject/fn/api/agent"
 	"github.com/fnproject/fn/api/models"
 	"github.com/gin-gonic/gin"
 	"go.opencensus.io/tag"
@@ -58,7 +59,7 @@ func (s *Server) handleTriggerHTTPFunctionCall2(c *gin.Context) error {
 	c.Status(200) // this doesn't write the header yet
 
 	err = s.ServeHTTPTrigger(c, app, fn, trigger)
-	if _, ok := err.(models.APIError); ok || err == nil {
+	if agent.IsFuncError(err) || err == nil {
 		// report all user-directed errors and function responses from here, after submit has run.
 		// this is our never ending attempt to distinguish user and platform errors.
 		ctx, err := tag.New(c.Request.Context(),

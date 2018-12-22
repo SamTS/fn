@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fnproject/fn/api/agent/grpc"
+	"github.com/fnproject/fn/api/agent/proto"
 	"github.com/fnproject/fn/api/common"
 	"github.com/fnproject/fn/api/id"
 	"github.com/fnproject/fn/api/models"
@@ -74,7 +74,7 @@ var (
 // callHandle represents the state of the call as handled by the pure runner, and additionally it implements the
 // interface of http.ResponseWriter so that it can be used for streaming the output back.
 type callHandle struct {
-	engagement runner.RunnerProtocol_EngageServer
+	engagement proto.RunnerProtocol_EngageServer
 	ctx        context.Context
 	c          *call // the agent's version of call
 
@@ -86,17 +86,17 @@ type callHandle struct {
 	shutOnce          sync.Once
 	pipeToFnCloseOnce sync.Once
 
-	outQueue  chan *runner.RunnerMsg
+	outQueue  chan *proto.RunnerMsg
 	doneQueue chan struct{}
 	errQueue  chan error
-	inQueue   chan *runner.ClientMsg
+	inQueue   chan *proto.ClientMsg
 
 	// Pipe to push data to the agent Function container
 	pipeToFnW *io.PipeWriter
 	pipeToFnR *io.PipeReader
 }
 
-func NewCallHandle(engagement runner.RunnerProtocol_EngageServer) *callHandle {
+func NewCallHandle(engagement proto.RunnerProtocol_EngageServer) *callHandle {
 
 	// set up a pipe to push data to agent Function container
 	pipeR, pipeW := io.Pipe()
@@ -106,10 +106,10 @@ func NewCallHandle(engagement runner.RunnerProtocol_EngageServer) *callHandle {
 		ctx:        engagement.Context(),
 		headers:    make(http.Header),
 		status:     200,
-		outQueue:   make(chan *runner.RunnerMsg),
+		outQueue:   make(chan *proto.RunnerMsg),
 		doneQueue:  make(chan struct{}),
 		errQueue:   make(chan error, 1), // always allow one error (buffered)
-		inQueue:    make(chan *runner.ClientMsg),
+		inQueue:    make(chan *proto.ClientMsg),
 		pipeToFnW:  pipeW,
 		pipeToFnR:  pipeR,
 	}
@@ -188,7 +188,7 @@ func (ch *callHandle) waitError() error {
 }
 
 // enqueueMsg attempts to queue a message to the gRPC sender
-func (ch *callHandle) enqueueMsg(msg *runner.RunnerMsg) error {
+func (ch *callHandle) enqueueMsg(msg *proto.RunnerMsg) error {
 	select {
 	case ch.outQueue <- msg:
 		return nil
@@ -200,7 +200,7 @@ func (ch *callHandle) enqueueMsg(msg *runner.RunnerMsg) error {
 
 // enqueueMsgStricy enqueues a message to the gRPC sender and if
 // that fails then initiates an error case shutdown.
-func (ch *callHandle) enqueueMsgStrict(msg *runner.RunnerMsg) error {
+func (ch *callHandle) enqueueMsgStrict(msg *proto.RunnerMsg) error {
 	err := ch.enqueueMsg(msg)
 	if err != nil {
 		ch.shutdown(err)
@@ -218,11 +218,11 @@ func (ch *callHandle) enqueueDetached(err error) {
 		}
 	}
 
-	err = ch.enqueueMsg(&runner.RunnerMsg{
-		Body: &runner.RunnerMsg_ResultStart{
-			ResultStart: &runner.CallResultStart{
-				Meta: &runner.CallResultStart_Http{
-					Http: &runner.HttpRespMeta{
+	err = ch.enqueueMsg(&proto.RunnerMsg{
+		Body: &proto.RunnerMsg_ResultStart{
+			ResultStart: &proto.CallResultStart{
+				Meta: &proto.CallResultStart_Http{
+					Http: &proto.HttpRespMeta{
 						Headers:    ch.prepHeaders(),
 						StatusCode: int32(statusCode)}}}}})
 }
@@ -237,12 +237,14 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 	var details string
 	var errCode int
 	var errStr string
+	var errUser bool
 
 	log := common.Logger(ch.ctx)
 
 	if err != nil {
 		errCode = models.GetAPIErrorCode(err)
 		errStr = err.Error()
+		errUser = IsFuncError(err)
 	}
 
 	if ch.c != nil {
@@ -271,8 +273,8 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 	}
 	log.Debugf("Sending Call Finish details=%v", details)
 
-	errTmp := ch.enqueueMsgStrict(&runner.RunnerMsg{
-		Body: &runner.RunnerMsg_Finished{Finished: &runner.CallFinished{
+	errTmp := ch.enqueueMsgStrict(&proto.RunnerMsg{
+		Body: &proto.RunnerMsg_Finished{Finished: &proto.CallFinished{
 			Success:     err == nil,
 			Details:     details,
 			ErrorCode:   int32(errCode),
@@ -280,6 +282,7 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 			CreatedAt:   createdAt,
 			StartedAt:   startedAt,
 			CompletedAt: completedAt,
+			ErrorUser:   errUser,
 		}}})
 
 	if errTmp != nil {
@@ -295,9 +298,9 @@ func (ch *callHandle) enqueueCallResponse(err error) {
 
 // spawnPipeToFn pumps data to Function via callHandle io.PipeWriter (pipeToFnW)
 // which is fed using input channel.
-func (ch *callHandle) spawnPipeToFn() chan *runner.DataFrame {
+func (ch *callHandle) spawnPipeToFn() chan *proto.DataFrame {
 
-	input := make(chan *runner.DataFrame)
+	input := make(chan *proto.DataFrame)
 	go func() {
 		defer ch.closePipeToFn()
 		for {
@@ -395,11 +398,11 @@ func (ch *callHandle) WriteHeader(status int) {
 
 // prepHeaders is a utility function to compile http headers
 // into a flat array.
-func (ch *callHandle) prepHeaders() []*runner.HttpHeader {
-	var headers []*runner.HttpHeader
+func (ch *callHandle) prepHeaders() []*proto.HttpHeader {
+	var headers []*proto.HttpHeader
 	for h, vals := range ch.headers {
 		for _, v := range vals {
-			headers = append(headers, &runner.HttpHeader{
+			headers = append(headers, &proto.HttpHeader{
 				Key:   h,
 				Value: v,
 			})
@@ -409,7 +412,7 @@ func (ch *callHandle) prepHeaders() []*runner.HttpHeader {
 }
 
 // Write implements http.ResponseWriter, which
-// is used by Agent to push http data to pure runner. The
+// is used by Agent to push http data to pure proto. The
 // received data is pushed to LB via gRPC sender queue.
 // Write also sends http headers/state to the LB.
 func (ch *callHandle) Write(data []byte) (int, error) {
@@ -425,11 +428,11 @@ func (ch *callHandle) Write(data []byte) (int, error) {
 		// protocol/json.go, agent.go, etc. In practice however, one go routine
 		// accesses them (which also compiles and writes headers), but this
 		// is fragile and needs to be fortified.
-		err = ch.enqueueMsg(&runner.RunnerMsg{
-			Body: &runner.RunnerMsg_ResultStart{
-				ResultStart: &runner.CallResultStart{
-					Meta: &runner.CallResultStart_Http{
-						Http: &runner.HttpRespMeta{
+		err = ch.enqueueMsg(&proto.RunnerMsg{
+			Body: &proto.RunnerMsg_ResultStart{
+				ResultStart: &proto.CallResultStart{
+					Meta: &proto.CallResultStart_Http{
+						Http: &proto.HttpRespMeta{
 							Headers:    ch.prepHeaders(),
 							StatusCode: int32(ch.status),
 						},
@@ -458,9 +461,9 @@ func (ch *callHandle) Write(data []byte) (int, error) {
 		copy(cpData, data[0:chunkSize])
 		data = data[chunkSize:]
 
-		err = ch.enqueueMsg(&runner.RunnerMsg{
-			Body: &runner.RunnerMsg_Data{
-				Data: &runner.DataFrame{
+		err = ch.enqueueMsg(&proto.RunnerMsg{
+			Body: &proto.RunnerMsg_Data{
+				Data: &proto.DataFrame{
 					Data: cpData,
 					Eof:  false,
 				},
@@ -478,8 +481,8 @@ func (ch *callHandle) Write(data []byte) (int, error) {
 
 // getTryMsg fetches/waits for a TryCall message from
 // the LB using inQueue (gRPC receiver)
-func (ch *callHandle) getTryMsg() *runner.TryCall {
-	var msg *runner.TryCall
+func (ch *callHandle) getTryMsg() *proto.TryCall {
+	var msg *proto.TryCall
 
 	select {
 	case <-ch.doneQueue:
@@ -501,8 +504,8 @@ func (ch *callHandle) getTryMsg() *runner.TryCall {
 
 // getDataMsg fetches/waits for a DataFrame message from
 // the LB using inQueue (gRPC receiver)
-func (ch *callHandle) getDataMsg() *runner.DataFrame {
-	var msg *runner.DataFrame
+func (ch *callHandle) getDataMsg() *proto.DataFrame {
+	var msg *proto.DataFrame
 
 	select {
 	case <-ch.doneQueue:
@@ -551,7 +554,7 @@ type statusTracker struct {
 	// since we set/save contents of RunnerStatus once.
 	lock   sync.Mutex
 	expiry time.Time
-	cache  *runner.RunnerStatus
+	cache  *proto.RunnerStatus
 	wait   chan struct{}
 }
 
@@ -625,7 +628,7 @@ func (pr *pureRunner) spawnDetachSubmit(state *callHandle) {
 }
 
 // handleTryCall based on the TryCall message, tries to place the call on NBIO Agent
-func (pr *pureRunner) handleTryCall(tc *runner.TryCall, state *callHandle) error {
+func (pr *pureRunner) handleTryCall(tc *proto.TryCall, state *callHandle) error {
 
 	start := time.Now()
 
@@ -687,7 +690,7 @@ func (pr *pureRunner) handleTryCall(tc *runner.TryCall, state *callHandle) error
 
 // implements RunnerProtocolServer
 // Handles a client engagement
-func (pr *pureRunner) Engage(engagement runner.RunnerProtocol_EngageServer) error {
+func (pr *pureRunner) Engage(engagement proto.RunnerProtocol_EngageServer) error {
 	grpc.EnableTracing = false
 	ctx := engagement.Context()
 	log := common.Logger(ctx)
@@ -746,13 +749,13 @@ func (pr *pureRunner) Engage(engagement runner.RunnerProtocol_EngageServer) erro
 }
 
 // Runs a status call using status image with baked in parameters.
-func (pr *pureRunner) runStatusCall(ctx context.Context) *runner.RunnerStatus {
+func (pr *pureRunner) runStatusCall(ctx context.Context) *proto.RunnerStatus {
 	// IMPORTANT: apply an upper bound timeout
 	var cancel context.CancelFunc
 	ctx, cancel = context.WithTimeout(ctx, StatusCtxTimeout)
 	defer cancel()
 
-	result := &runner.RunnerStatus{}
+	result := &proto.RunnerStatus{}
 	log := common.Logger(ctx)
 	start := time.Now()
 
@@ -860,8 +863,8 @@ func (pr *pureRunner) spawnStatusCall(ctx context.Context) {
 	}()
 }
 
-func (pr *pureRunner) fetchStatusCall(ctx context.Context) (*runner.RunnerStatus, error) {
-	var cacheObj runner.RunnerStatus
+func (pr *pureRunner) fetchStatusCall(ctx context.Context) (*proto.RunnerStatus, error) {
+	var cacheObj proto.RunnerStatus
 
 	// A shallow copy is sufficient here, as we do not modify nested data in
 	// RunnerStatus in any way.
@@ -904,7 +907,7 @@ func (pr *pureRunner) checkStatusCall(ctx context.Context) (chan struct{}, bool)
 }
 
 // Handles a status call concurrency and caching.
-func (pr *pureRunner) handleStatusCall(ctx context.Context) (*runner.RunnerStatus, error) {
+func (pr *pureRunner) handleStatusCall(ctx context.Context) (*proto.RunnerStatus, error) {
 
 	waitChan, isSpawner := pr.checkStatusCall(ctx)
 
@@ -926,10 +929,10 @@ func (pr *pureRunner) handleStatusCall(ctx context.Context) (*runner.RunnerStatu
 }
 
 // implements RunnerProtocolServer
-func (pr *pureRunner) Status(ctx context.Context, _ *empty.Empty) (*runner.RunnerStatus, error) {
+func (pr *pureRunner) Status(ctx context.Context, _ *empty.Empty) (*proto.RunnerStatus, error) {
 	// Status using image name is disabled. We return inflight request count only
 	if pr.status.imageName == "" {
-		return &runner.RunnerStatus{
+		return &proto.RunnerStatus{
 			Active:           atomic.LoadInt32(&pr.status.inflight),
 			RequestsReceived: atomic.LoadUint64(&pr.status.requestsReceived),
 			RequestsHandled:  atomic.LoadUint64(&pr.status.requestsHandled),
@@ -1065,7 +1068,7 @@ func NewPureRunner(cancel context.CancelFunc, addr string, options ...PureRunner
 
 	pr.callHandleMap = make(map[string]*callHandle)
 	pr.gRPCServer = grpc.NewServer(pr.gRPCOptions...)
-	runner.RegisterRunnerProtocolServer(pr.gRPCServer, pr)
+	proto.RegisterRunnerProtocolServer(pr.gRPCServer, pr)
 
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -1084,5 +1087,5 @@ func NewPureRunner(cancel context.CancelFunc, addr string, options ...PureRunner
 	return pr, nil
 }
 
-var _ runner.RunnerProtocolServer = &pureRunner{}
+var _ proto.RunnerProtocolServer = &pureRunner{}
 var _ Agent = &pureRunner{}

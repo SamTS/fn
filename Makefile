@@ -12,7 +12,7 @@ build:
 	go build -o fnserver ./cmd/fnserver 
 
 .PHONY: generate
-generate: api/agent/grpc/runner.pb.go
+generate: api/agent/proto/runner.pb.go
 
 .PHONY: install
 install:
@@ -105,7 +105,9 @@ test-build-arm:
 	GOARCH=arm64 $(MAKE) build
 
 %.pb.go: %.proto
-	protoc --proto_path=$(@D) --proto_path=./vendor --go_out=plugins=grpc:$(@D) $<
+	# TODO(reed): install protoc instructions (proto3)
+	# TODO(reed): install gogoprotobuf from vendor
+	protoc -I=$(@D) -I=./vendor/github.com/gogo/protobuf/protobuf -I=$(GOPATH)/src --gogo_out=plugins=grpc:$(@D) $<
 
 .PHONY: run
 run: build

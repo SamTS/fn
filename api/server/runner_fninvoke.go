@@ -68,7 +68,7 @@ func (s *Server) handleFnInvokeCall2(c *gin.Context) error {
 	}
 
 	err = s.ServeFnInvoke(c, app, fn)
-	if _, ok := err.(models.APIError); ok || err == nil {
+	if agent.IsFuncError(err) || err == nil {
 		// report all user-directed errors and function responses from here, after submit has run.
 		// this is our never ending attempt to distinguish user and platform errors.
 		ctx, err := tag.New(c.Request.Context(),

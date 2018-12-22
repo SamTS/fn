@@ -10,19 +10,17 @@ import (
 	"net/http"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-
-	pb "github.com/fnproject/fn/api/agent/grpc"
+	"github.com/fnproject/fn/api/agent/proto"
 	"github.com/fnproject/fn/api/common"
 	"github.com/fnproject/fn/api/models"
 	pool "github.com/fnproject/fn/api/runnerpool"
 	"github.com/fnproject/fn/grpcutil"
-
 	pb_empty "github.com/golang/protobuf/ptypes/empty"
 	"github.com/sirupsen/logrus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -39,7 +37,7 @@ type gRPCRunner struct {
 	shutWg  *common.WaitGroup
 	address string
 	conn    *grpc.ClientConn
-	client  pb.RunnerProtocolClient
+	client  proto.RunnerProtocolClient
 }
 
 // implements Runner
@@ -63,7 +61,7 @@ func NewgRPCRunner(addr string, tlsConf *tls.Config, dialOpts ...grpc.DialOption
 
 }
 
-func runnerConnection(address string, tlsConf *tls.Config, dialOpts ...grpc.DialOption) (*grpc.ClientConn, pb.RunnerProtocolClient, error) {
+func runnerConnection(address string, tlsConf *tls.Config, dialOpts ...grpc.DialOption) (*grpc.ClientConn, proto.RunnerProtocolClient, error) {
 
 	ctx := context.Background()
 	logger := common.Logger(ctx).WithField("runner_addr", address)
@@ -80,7 +78,7 @@ func runnerConnection(address string, tlsConf *tls.Config, dialOpts ...grpc.Dial
 		logger.WithError(err).Error("Unable to connect to runner node")
 	}
 
-	protocolClient := pb.NewRunnerProtocolClient(conn)
+	protocolClient := proto.NewRunnerProtocolClient(conn)
 	logger.Info("Connected to runner")
 
 	return conn, protocolClient, nil
@@ -107,7 +105,7 @@ func isTooBusy(err error) bool {
 }
 
 // Translate runner.RunnerStatus to runnerpool.RunnerStatus
-func TranslateGRPCStatusToRunnerStatus(status *pb.RunnerStatus) *pool.RunnerStatus {
+func TranslateGRPCStatusToRunnerStatus(status *proto.RunnerStatus) *pool.RunnerStatus {
 	if status == nil {
 		return nil
 	}
@@ -180,7 +178,7 @@ func (r *gRPCRunner) TryExec(ctx context.Context, call pool.RunnerCall) (bool, e
 		return false, err
 	}
 
-	err = runnerConnection.Send(&pb.ClientMsg{Body: &pb.ClientMsg_Try{Try: &pb.TryCall{
+	err = runnerConnection.Send(&proto.ClientMsg{Body: &proto.ClientMsg_Try{Try: &proto.TryCall{
 		ModelsCallJson: string(modelJSON),
 		SlotHashId:     hex.EncodeToString([]byte(call.SlotHashId())),
 		Extensions:     call.Extensions(),
@@ -212,7 +210,7 @@ func (r *gRPCRunner) TryExec(ctx context.Context, call pool.RunnerCall) (bool, e
 	}
 }
 
-func sendToRunner(ctx context.Context, protocolClient pb.RunnerProtocol_EngageClient, runnerAddress string, call pool.RunnerCall) {
+func sendToRunner(ctx context.Context, protocolClient proto.RunnerProtocol_EngageClient, runnerAddress string, call pool.RunnerCall) {
 	bodyReader := call.RequestBody()
 	writeBuffer := make([]byte, MaxDataChunk)
 
@@ -237,9 +235,9 @@ func sendToRunner(ctx context.Context, protocolClient pb.RunnerProtocol_EngageCl
 		data := writeBuffer[:n]
 
 		log.Debugf("Sending %d bytes of data isEOF=%v to runner", n, isEOF)
-		sendErr := protocolClient.Send(&pb.ClientMsg{
-			Body: &pb.ClientMsg_Data{
-				Data: &pb.DataFrame{
+		sendErr := protocolClient.Send(&proto.ClientMsg{
+			Body: &proto.ClientMsg_Data{
+				Data: &proto.DataFrame{
 					Data: data,
 					Eof:  isEOF,
 				},
@@ -259,7 +257,7 @@ func sendToRunner(ctx context.Context, protocolClient pb.RunnerProtocol_EngageCl
 	}
 }
 
-func parseError(msg *pb.CallFinished) error {
+func parseError(msg *proto.CallFinished) error {
 	if msg.GetSuccess() {
 		return nil
 	}
@@ -268,7 +266,11 @@ func parseError(msg *pb.CallFinished) error {
 	if eStr == "" {
 		eStr = "Unknown Error From Pure Runner"
 	}
-	return models.NewAPIError(int(eCode), errors.New(eStr))
+	err := models.NewAPIError(int(eCode), errors.New(eStr))
+	if msg.GetErrorUser() {
+		return NewFuncError(err)
+	}
+	return err
 }
 
 func tryQueueError(err error, done chan error) {
@@ -288,7 +290,7 @@ func translateDate(dt string) time.Time {
 	return time.Time{}
 }
 
-func recordFinishStats(ctx context.Context, msg *pb.CallFinished, c pool.RunnerCall) {
+func recordFinishStats(ctx context.Context, msg *proto.CallFinished, c pool.RunnerCall) {
 
 	creatTs := translateDate(msg.GetCreatedAt())
 	startTs := translateDate(msg.GetStartedAt())
@@ -307,7 +309,7 @@ func recordFinishStats(ctx context.Context, msg *pb.CallFinished, c pool.RunnerC
 	}
 }
 
-func receiveFromRunner(ctx context.Context, protocolClient pb.RunnerProtocol_EngageClient, runnerAddress string, c pool.RunnerCall, done chan error) {
+func receiveFromRunner(ctx context.Context, protocolClient proto.RunnerProtocol_EngageClient, runnerAddress string, c pool.RunnerCall, done chan error) {
 	w := c.ResponseWriter()
 	defer close(done)
 
@@ -328,9 +330,9 @@ DataLoop:
 
 		// Process HTTP header/status message. This may not arrive depending on
 		// pure runners behavior. (Eg. timeout & no IO received from function)
-		case *pb.RunnerMsg_ResultStart:
+		case *proto.RunnerMsg_ResultStart:
 			switch meta := body.ResultStart.Meta.(type) {
-			case *pb.CallResultStart_Http:
+			case *proto.CallResultStart_Http:
 				log.Debugf("Received meta http result from runner Status=%v", meta.Http.StatusCode)
 				for _, header := range meta.Http.Headers {
 					w.Header().Set(header.Key, header.Value)
@@ -344,7 +346,7 @@ DataLoop:
 			}
 
 		// May arrive if function has output. We ignore EOF.
-		case *pb.RunnerMsg_Data:
+		case *proto.RunnerMsg_Data:
 			log.Debugf("Received data from runner len=%d isEOF=%v", len(body.Data.Data), body.Data.Eof)
 			if !isPartialWrite {
 				// WARNING: blocking write
@@ -360,7 +362,7 @@ DataLoop:
 			}
 
 		// Finish messages required for finish/finalize the processing.
-		case *pb.RunnerMsg_Finished:
+		case *proto.RunnerMsg_Finished:
 			logCallFinish(log, body, w.Header(), statusCode)
 			recordFinishStats(ctx, body.Finished, c)
 			if !body.Finished.Success {
@@ -394,7 +396,7 @@ DataLoop:
 	}
 }
 
-func logCallFinish(log logrus.FieldLogger, msg *pb.RunnerMsg_Finished, headers http.Header, httpStatus int32) {
+func logCallFinish(log logrus.FieldLogger, msg *proto.RunnerMsg_Finished, headers http.Header, httpStatus int32) {
 	log.WithFields(logrus.Fields{
 		"runner_success":     msg.Finished.GetSuccess(),
 		"runner_error_code":  msg.Finished.GetErrorCode(),

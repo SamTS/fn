@@ -1,6 +1,17 @@
 syntax = "proto3";
 
+package proto;
+
+import "github.com/gogo/protobuf/gogoproto/gogo.proto";
 import "google/protobuf/empty.proto";
+
+option (gogoproto.marshaler_all) = true;
+option (gogoproto.unmarshaler_all) = true;
+option (gogoproto.sizer_all) = true;
+option (gogoproto.populate_all) = true;
+option (gogoproto.equal_all) = true;
+option (gogoproto.testgen_all) = true;
+option (gogoproto.benchgen_all) = true;
 
 // Request to allocate a slot for a call
 message TryCall {
@@ -45,6 +56,7 @@ message CallFinished {
     string createdAt = 5;
     string startedAt = 6;
     string completedAt = 7;
+    bool errorUser = 8;
 }
 
 message ClientMsg {
