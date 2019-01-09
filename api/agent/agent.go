@@ -441,7 +441,7 @@ func (a *agent) checkLaunch(ctx context.Context, call *call, caller slotCaller) 
 	}
 
 	state := NewContainerState()
-	state.UpdateState(ctx, ContainerStateWait, call.slots)
+	state.UpdateState(ctx, ContainerStateWait, call)
 
 	mem := call.Memory + uint64(call.TmpFsSize)
 
@@ -506,7 +506,7 @@ func (a *agent) checkLaunch(ctx context.Context, call *call, caller slotCaller) 
 		tok.Close()
 	}
 
-	defer state.UpdateState(ctx, ContainerStateDone, call.slots)
+	defer state.UpdateState(ctx, ContainerStateDone, call)
 
 	// IMPORTANT: we wait here for any possible evictions to finalize. Otherwise
 	// hotLauncher could call checkLaunch again and cause a capacity full (http 503)
@@ -783,7 +783,7 @@ func (a *agent) runHot(ctx context.Context, caller slotCaller, call *call, tok R
 	evictor := a.evictor.CreateEvictToken(call.slotHashId, call.Memory+uint64(call.TmpFsSize), uint64(call.CPUs))
 
 	statsUtilization(ctx, a.resources.GetUtilization())
-	state.UpdateState(ctx, ContainerStateStart, call.slots)
+	state.UpdateState(ctx, ContainerStateStart, call)
 
 	// stack unwind spelled out with strict ordering below.
 	defer func() {
@@ -814,7 +814,7 @@ func (a *agent) runHot(ctx context.Context, caller slotCaller, call *call, tok R
 		}
 
 		lastState := state.GetState()
-		state.UpdateState(ctx, ContainerStateDone, call.slots)
+		state.UpdateState(ctx, ContainerStateDone, call)
 
 		tok.Close() // release cpu/mem
 
@@ -1075,7 +1075,7 @@ func (a *agent) runHotReq(ctx context.Context, call *call, state ContainerState,
 	}()
 
 	evictor.SetEvictable(true)
-	state.UpdateState(ctx, ContainerStateIdle, call.slots)
+	state.UpdateState(ctx, ContainerStateIdle, call)
 
 	s := call.slots.queueSlot(slot)
 
@@ -1094,7 +1094,7 @@ func (a *agent) runHotReq(ctx context.Context, call *call, state ContainerState,
 					return false
 				}
 				isFrozen = true
-				state.UpdateState(ctx, ContainerStatePaused, call.slots)
+				state.UpdateState(ctx, ContainerStatePaused, call)
 			}
 			continue
 		case <-evictor.C:
@@ -1124,7 +1124,7 @@ func (a *agent) runHotReq(ctx context.Context, call *call, state ContainerState,
 		isFrozen = false
 	}
 
-	state.UpdateState(ctx, ContainerStateBusy, call.slots)
+	state.UpdateState(ctx, ContainerStateBusy, call)
 	return true
 }
 

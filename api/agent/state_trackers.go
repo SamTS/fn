@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"go.opencensus.io/tag"
 	"sync"
 	"time"
 
@@ -24,7 +25,7 @@ type requestState struct {
 }
 
 type ContainerState interface {
-	UpdateState(ctx context.Context, newState ContainerStateType, slots *slotQueue)
+	UpdateState(ctx context.Context, newState ContainerStateType, call *call)
 	GetState() string
 }
 type RequestState interface {
@@ -86,6 +87,7 @@ var containerTimeKeys = [ContainerStateMax]string{
 	"container_busy_duration_seconds",
 }
 
+
 func (c *requestState) UpdateState(ctx context.Context, newState RequestStateType, slots *slotQueue) {
 
 	var now time.Time
@@ -129,7 +131,31 @@ func (c *containerState) GetState() string {
 	return containerStateKeys[res]
 }
 
-func (c *containerState) UpdateState(ctx context.Context, newState ContainerStateType, slots *slotQueue) {
+//This lets the metrics know if a hot container is currently being run for a given app/fn/Image
+func setHot(ctx context.Context, appId string, fnId string, imageName string, state ContainerStateType) {
+	if state != ContainerStateStart && state != ContainerStateDone {
+		//if the container isn't being made or closed then we don't want to change the note of if it's hot or not
+		return
+	}
+
+	ctx, _ = tag.New(ctx,
+		tag.Upsert(appIdKey, appId),
+		tag.Upsert(functionIdKey, fnId),
+		tag.Upsert(imageNameKey, imageName))
+
+	var isHotState int64
+
+	if state == ContainerStateStart {
+		isHotState = 1
+	} else {
+		isHotState = -1
+	}
+
+	stats.Record(ctx, hotFunctionMeasure.M(isHotState))
+}
+
+func (c *containerState) UpdateState(ctx context.Context, newState ContainerStateType, call *call) {
+	var slots = call.slots
 
 	var now time.Time
 	var oldState ContainerStateType
@@ -158,8 +184,11 @@ func (c *containerState) UpdateState(ctx context.Context, newState ContainerStat
 		return
 	}
 
+	//call.AppID, call.FnID, call.Image
 	// reflect this change to slot mgr if defined (AKA hot)
 	if slots != nil {
+		setHot(ctx, call.AppID, call.FnID, call.Image, newState)
+
 		slots.enterContainerState(newState)
 		slots.exitContainerState(oldState)
 	}

@@ -22,6 +22,11 @@ var (
 	// bool flags of status call results (cached=true/false, success=true/false)
 	statusCallCacheKey   = common.MakeKey("cached")
 	statusCallSuccessKey = common.MakeKey("success")
+
+	appIdKey        = common.MakeKey("app_id")
+	functionIdKey   = common.MakeKey("function_id")
+	imageNameKey    = common.MakeKey("image_name")
+	hotFunctionKeys = []tag.Key{appIdKey, functionIdKey, imageNameKey}
 )
 
 func statsCalls(ctx context.Context) {
@@ -191,11 +196,11 @@ var (
 	dockerMeasures         = initDockerMeasures()
 	containerGaugeMeasures = initContainerGaugeMeasures()
 	containerTimeMeasures  = initContainerTimeMeasures()
-
-	utilCpuUsedMeasure  = common.MakeMeasure(utilCpuUsedMetricName, "agent cpu in use", "")
-	utilCpuAvailMeasure = common.MakeMeasure(utilCpuAvailMetricName, "agent cpu available", "")
-	utilMemUsedMeasure  = common.MakeMeasure(utilMemUsedMetricName, "agent memory in use", "By")
-	utilMemAvailMeasure = common.MakeMeasure(utilMemAvailMetricName, "agent memory available", "By")
+	utilCpuUsedMeasure     = common.MakeMeasure(utilCpuUsedMetricName, "agent cpu in use", "")
+	utilCpuAvailMeasure    = common.MakeMeasure(utilCpuAvailMetricName, "agent cpu available", "")
+	utilMemUsedMeasure     = common.MakeMeasure(utilMemUsedMetricName, "agent memory in use", "By")
+	utilMemAvailMeasure    = common.MakeMeasure(utilMemAvailMetricName, "agent memory available", "By")
+	hotFunctionMeasure     = common.MakeMeasure("Hot Functions", "Says what functions for what apps are hot", "")
 
 	containerEvictedMeasure        = common.MakeMeasure(containerEvictedMetricName, "containers evicted", "")
 	containerUDSInitLatencyMeasure = common.MakeMeasure(containerUDSInitLatencyMetricName, "container UDS Init-Wait Latency", "msecs")
@@ -245,7 +250,9 @@ func RegisterAgentViews(tagKeys []string, latencyDist []float64) {
 		common.CreateView(utilCpuAvailMeasure, view.LastValue(), tagKeys),
 		common.CreateView(utilMemUsedMeasure, view.LastValue(), tagKeys),
 		common.CreateView(utilMemAvailMeasure, view.LastValue(), tagKeys),
+		common.CreateViewWithTags(hotFunctionMeasure, view.Sum(), hotFunctionKeys),
 	)
+
 	if err != nil {
 		logrus.WithError(err).Fatal("cannot register view")
 	}
