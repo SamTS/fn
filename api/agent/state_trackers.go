@@ -16,6 +16,7 @@ type containerState struct {
 	lock  sync.Mutex
 	state ContainerStateType
 	start time.Time
+	cfg   *Config
 }
 
 type requestState struct {
@@ -36,8 +37,10 @@ func NewRequestState() RequestState {
 	return &requestState{}
 }
 
-func NewContainerState() ContainerState {
-	return &containerState{}
+func NewContainerState(config *Config) ContainerState {
+	cs := &containerState{}
+	cs.cfg = config
+	return cs
 }
 
 const (
@@ -87,6 +90,14 @@ var containerTimeKeys = [ContainerStateMax]string{
 	"container_busy_duration_seconds",
 }
 
+var functionStateMeasureKeys = [ContainerStateMax]string{
+	"",
+	"container_wait_function",
+	"container_start_function",
+	"container_idle_function",
+	"container_paused_function",
+	"container_busy_function",
+}
 
 func (c *requestState) UpdateState(ctx context.Context, newState RequestStateType, slots *slotQueue) {
 
@@ -131,35 +142,17 @@ func (c *containerState) GetState() string {
 	return containerStateKeys[res]
 }
 
-//This lets the metrics know if a hot container is currently being run for a given app/fn/Image
-func setHot(ctx context.Context, appId string, fnId string, imageName string, state ContainerStateType) {
-	if state != ContainerStateStart && state != ContainerStateDone {
-		//if the container isn't being made or closed then we don't want to change the note of if it's hot or not
-		return
-	}
-
-	ctx, _ = tag.New(ctx,
-		tag.Upsert(appIdKey, appId),
-		tag.Upsert(functionIdKey, fnId),
-		tag.Upsert(imageNameKey, imageName))
-
-	var isHotState int64
-
-	if state == ContainerStateStart {
-		isHotState = 1
-	} else {
-		isHotState = -1
-	}
-
-	stats.Record(ctx, hotFunctionMeasure.M(isHotState))
-}
-
 func (c *containerState) UpdateState(ctx context.Context, newState ContainerStateType, call *call) {
 	var slots = call.slots
 
 	var now time.Time
 	var oldState ContainerStateType
 	var before time.Time
+
+	ctx, _ = tag.New(ctx,
+		tag.Upsert(appIdKey, call.AppID),
+		tag.Upsert(functionIdKey, call.FnID),
+		tag.Upsert(imageNameKey, call.Image))
 
 	c.lock.Lock()
 
@@ -187,7 +180,12 @@ func (c *containerState) UpdateState(ctx context.Context, newState ContainerStat
 	//call.AppID, call.FnID, call.Image
 	// reflect this change to slot mgr if defined (AKA hot)
 	if slots != nil {
-		setHot(ctx, call.AppID, call.FnID, call.Image, newState)
+		if c.cfg.EnableFnStateMetrics {
+			if oldState > 0 {
+				stats.Record(ctx, functionStateMeasures[oldState].M(-1))
+			}
+			stats.Record(ctx, functionStateMeasures[newState].M(1))
+		}
 
 		slots.enterContainerState(newState)
 		slots.exitContainerState(oldState)
